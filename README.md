@@ -1,73 +1,76 @@
+# gta6-trophy-rarity-forecast-01
+
 [![make.fun · gta6-trophy-rarity-forecast-01](https://make.fun/badge/gta6-trophy-rarity-forecast-01.svg)](https://make.fun/bounty/gta6-trophy-rarity-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-trophy-rarity-forecast-01)
 [![rank](https://make.fun/badge/gta6-trophy-rarity-forecast-01/tukiyatlampu/gta6-trophy-rarity-forecast-01/rank.svg)](https://make.fun/bounty/gta6-trophy-rarity-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-trophy-rarity-forecast-01)
 [![reward](https://make.fun/badge/gta6-trophy-rarity-forecast-01/tukiyatlampu/gta6-trophy-rarity-forecast-01/reward.svg)](https://make.fun/bounty/gta6-trophy-rarity-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-trophy-rarity-forecast-01)
 
-# Denominator-Aware Trophy Rarity Forecast
-
-Forecasts each of GTA VI's 55 PS5 trophies' Exophase earn rate (%) at the case
-target, as five quantiles (0.05 / 0.25 / 0.5 / 0.75 / 0.95). Python 3.13,
+Forecasts, for each of GTA VI's 55 PS5 trophies, the percent of
+Exophase-tracked players who will have earned it at the case target,
+as five quantiles (0.05 / 0.25 / 0.5 / 0.75 / 0.95). Python 3.13,
 standard library only, no network, deterministic.
 
 ## Architecture
 
-- **Earners over players, not rates.** Each two-decimal displayed rate plus its
-  simultaneous players-tracked count reconstructs an integer earner count
-  (rounding-interval midpoint; on practice p00 the reconstructed earners sum
-  to exactly 943 = `trophies_earned`). A sixfold jump in tracked players with
-  frozen earners then correctly predicts a sixfold rate drop.
-- **Denominator with decaying influx.** Players-tracked is fit with three
-  curves (β = 0.5 / 1 / 1.5, ridge + Huber), kept as a 0.25 / 0.50 / 0.25
-  mixture, so the forecast carries denominator uncertainty instead of a
-  single growth guess.
-- **Anchored per-trophy curves.** Each trophy fits two curves in
-  x = ln(1 + age in days) — log earners and direct logit rate — anchored at
-  its last valid read and shrunk toward a family-pooled slope (story / side /
-  exploration / grind / completion, by description keywords).
-- **Refresh timing.** The answer is the rate as of the last refresh before
-  the target, so the model forecasts the next refresh: a Weibull waiting time
-  when the page has been frozen since launch, otherwise an exponential
-  cadence; eight equal-mass time nodes, denominator shocks, and a two-scale
-  normal mixture in scoring-logit space. Quantiles are the left inverse of
-  the mixture CDF (28 fixed bisection steps).
-- **Fallbacks.** A never-observed trophy takes the median projected logit of
-  its family peers (scale 2); with no peers, a family prior median rate.
+Earners and players are fitted separately, because a refresh that
+adds tracked players must dilute a rare trophy's rate even when
+nobody new earned it. Earner counts are reconstructed from each
+two-decimal displayed rate intersected with integer counts at the
+simultaneous player count. The denominator follows a decaying-influx
+curve in three decay variants (beta 0.5 / 1 / 1.5, weights
+0.25 / 0.5 / 0.25). Each trophy gets two anchored curves (log-count
+and direct logit) whose slopes shrink toward family-peer medians
+(story, side, exploration, grind, completion). A refresh-timing
+mixture — a no-change atom plus eight last-refresh nodes, three
+denominator shocks, two normal scales (at most 144 components per
+trophy) — is inverted by 28-step bisection to give the requested
+quantiles. Forward log-time steps are damped
+(`D_eff = 0.3*(1-exp(-D/0.3))`) so a log-linear earner slope fitted
+on the steep launch window cannot compound unchecked over a
+4.5-day horizon; near D = 0 the damping is ~identity. Startup (a
+page frozen since launch) uses a Weibull
+first-refresh wait and denominator jumps of 2x / 4x / 8x. Output is
+validated against the contract; on failure it falls back to
+last-observed-rate rows, then to an all-zero fixed vector.
 
-## Quick test
+## Run it
 
 ```sh
-mkdir -p out && MAKEFUN_INPUT_DIR=demo MAKEFUN_OUTPUT_DIR=out python3 main.py
-python3 tests/validate.py out/demo.out
-python3 tests/backtest.py    # practice + replay + synthetic stress
-python3 tests/edge_test.py   # 21 edge cases + ledger/mids/stale/thin/contract/batch checks
+MAKEFUN_INPUT_DIR=demo MAKEFUN_OUTPUT_DIR=demo/out python3 main.py
 ```
 
-## Validation (backtest estimates, not kit scores)
+Grader form: `python3 -P -s /bot/main.py` with `MAKEFUN_INPUT_DIR`
+/ `MAKEFUN_OUTPUT_DIR` (defaults `/input`, `/output`). One `<id>.out`
+per `<id>.in`: `{"trophies":[{"id":N,"q":[q05,q25,q50,q75,q95]}]}`,
+one row per trophy in input order, five finite numbers in [0, 100],
+non-decreasing, at most 65,536 bytes.
 
-| Check | Ours | Persistence baseline |
-|---|---|---|
-| Practice p00/p01 vs dilution pseudo-answer | 0.59 | 1.69 |
-| Practice vs dilution+growth pseudo-answer | 0.54 | 1.60 |
-| 10:17Z replay (9 known snapshot rates) | 0.20 | 1.00 |
-| Synthetic stress, pooled (6 scenarios) | 0.42 | 0.50 |
-| High-rate dilution (80% -> 13.19% truth) | 0.91 | 3.18 |
-| Dense benchmark, 289 reads, 6510-min horizon | 0.26 | 0.25 |
+## Tests
 
-Logit-scale pinball loss, lower is better. House baselines score ~1.51 on
-practice. Runtime ~0.3 s/case (limit 8 s); two runs byte-identical; worst
-case 289 reads on 1 CPU: 0.36 s. See `TEST_RESULTS.md` for the full numbers,
-the pseudo-answer construction, the seven judge passes (60, 72, 84, 89, 86,
-94, 95/100 — latest pass: 95 SHIP, pass-6 blocker fixed and verified in
-pass 7), and the known limitations — including the
-dense benchmark where persistence still wins narrowly (0.26 vs 0.25);
-the H-round cap rework had regressed it to 0.29, and restoring the old
-broad cap recovered it to 0.26 (applied in this revision).
+```sh
+python3 tests/edge_test.py   # 58 checks: edges, contract, determinism, retry paths
+python3 tests/backtest.py    # practice pseudo-answers, 10:17Z replay, scenario G, synthetic + dense
+python3 tests/validate.py <input_dir> <output_dir> [answers.json]
+```
+
+Results in `TEST_RESULTS.md`. Practice (kit p00/p01) vs the
+dilution pseudo-answer: 0.5844 vs starter 1.6871; vs
+dilution+growth: 0.5295 vs 1.5955. 10:17Z replay (9 trophies):
+0.2052 vs 1.0028. Scenario G (79.94% -> 13.19% truth): 0.9082 vs
+3.1764. Synthetic pooled (6 scenarios): 0.3746 vs starter 0.5731;
+dense benchmark: 0.4131 vs 0.5968 in 0.24 s. A second independent
+synthetic generator agrees: pooled 0.6861 vs starter 1.0478,
+dense 0.6645 vs 1.0125. See
+`TEST_RESULTS.md` for the full table and the fixture note.
 
 ## Files
 
-- `main.py` — the entry (run as `python3 -P -s /bot/main.py` by the grader)
-- `tests/validate.py` — output-contract validator
-- `tests/backtest.py` — pinball scoring vs persistence + synthetic stress
-- `tests/edge_test.py` — edge cases, determinism, permutation-invariance
-- `TEST_RESULTS.md` — full numbers, judge passes, known limitations
-- `demo/demo.in` — two-read smoke-test case
-- `.makefun/owner.json` — repo-owner claim (wallet `G9dDsodYieJBpsE5wBZS2drwBBRrRCF6ait6z7fhdod`)
+- `main.py` — the forecaster (entrypoint, stdlib only).
+- `tests/edge_test.py` — edge-case and contract tests.
+- `tests/backtest.py` — offline backtest with its own seeded
+  synthetic generator (arrival convolution, batched refreshes,
+  backfills, missing reads).
+- `tests/validate.py` — output-contract validator and pinball
+  scorer against an answers file.
+- `demo/demo.in` — 5-trophy smoke case (frozen launch-night page).
+- `TEST_RESULTS.md` — measured results.
+- `LICENSE` — MIT.
